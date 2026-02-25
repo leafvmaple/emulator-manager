@@ -4,17 +4,20 @@ Usage:
     python -m tools.import_dat <platform> <dat_file>
 
 Examples:
-    python -m tools.import_dat gba dat/Nintendo\ -\ Game\ Boy\ Advance\ (...).dat
-    python -m tools.import_dat nds dat/Nintendo\ -\ Nintendo\ DS\ (...).dat
+    python -m tools.import_dat gba "dat/Nintendo - Game Boy Advance (...).dat"
+    python -m tools.import_dat nds "dat/Nintendo - Nintendo DS (...).dat"
+    python -m tools.import_dat nes "dat/Nintendo - Nintendo Entertainment System (...).dat"
+    python -m tools.import_dat snes "dat/Nintendo - Super Nintendo Entertainment System (...).dat"
 
-The generated ``games.json`` is placed under ``app/plugins/<platform>/``
-and maps 4-character ROM serial codes to canonical game names::
+The generated ``games.json`` is placed under ``app/plugins/<platform>/``.
 
-    {
-      "AXVE": "Pokemon - Ruby Version",
-      "AXVJ": "Pocket Monsters - Ruby",
-      ...
-    }
+For platforms with serial codes (GBA, NDS), keys are serial codes::
+
+    {"AXVE": {"name": "Pokemon - Ruby Version", "crc32": ["AABBCCDD"]}}
+
+For platforms without serial codes (NES, SNES), keys are CRC32 hashes::
+
+    {"3577AB04": {"name": "'89 Dennou Kyuusei Uranai", "crc32": ["3577AB04"]}}
 """
 
 from __future__ import annotations
@@ -37,11 +40,31 @@ def clean_game_name(raw_name: str) -> str:
 
 
 def parse_dat(dat_path: Path) -> dict[str, dict[str, str | list[str]]]:
-    """Parse a No-Intro DAT XML and return {serial: {name, crc32: [...]}}."""
-    entries: dict[str, dict[str, str | list[str]]] = {}
+    """Parse a No-Intro DAT XML and return {key: {name, crc32: [...]}}.
 
+    For DATs with serial codes (majority of entries have serials), the key is the serial.
+    For DATs without serials (NES, SNES, etc.), the key is the CRC32 hash.
+    """
     tree = ET.parse(dat_path)
     root = tree.getroot()
+
+    # First pass: count serials to decide key mode
+    total_roms = 0
+    serial_count = 0
+    for game_el in root.iter("game"):
+        if (game_el.get("name", "")).startswith("[BIOS]"):
+            continue
+        for rom_el in game_el.iter("rom"):
+            total_roms += 1
+            serial = (rom_el.get("serial") or "").strip()
+            if serial and not serial.startswith("!") and serial.lower() != "n/a":
+                serial_count += 1
+
+    # Use serial as key if majority (>50%) have valid serials
+    use_serial = serial_count > total_roms * 0.5
+
+    # Second pass: build entries
+    entries: dict[str, dict[str, str | list[str]]] = {}
 
     for game_el in root.iter("game"):
         game_name = game_el.get("name", "")
@@ -50,19 +73,24 @@ def parse_dat(dat_path: Path) -> dict[str, dict[str, str | list[str]]]:
 
         for rom_el in game_el.iter("rom"):
             serial = (rom_el.get("serial") or "").strip()
-            if not serial or serial.startswith("!") or serial.lower() == "n/a":
-                continue
-
             crc32 = (rom_el.get("crc") or "").strip().upper()
             cleaned = clean_game_name(game_name)
-            key = serial.upper()
-            if key not in entries:
-                entries[key] = {"name": cleaned, "crc32": [crc32] if crc32 else []}
-            elif crc32:
-                crc_list = entries[key]["crc32"]
-                assert isinstance(crc_list, list)
-                if crc32 not in crc_list:
-                    crc_list.append(crc32)
+
+            valid_serial = serial and not serial.startswith("!") and serial.lower() != "n/a"
+
+            if use_serial and valid_serial:
+                key = serial.upper()
+                if key not in entries:
+                    entries[key] = {"name": cleaned, "crc32": [crc32] if crc32 else []}
+                elif crc32:
+                    crc_list = entries[key]["crc32"]
+                    assert isinstance(crc_list, list)
+                    if crc32 not in crc_list:
+                        crc_list.append(crc32)
+            elif not use_serial and crc32:
+                # Use CRC32 as key (NES, SNES, etc.)
+                if crc32 not in entries:
+                    entries[crc32] = {"name": cleaned, "crc32": [crc32]}
 
     return entries
 
@@ -87,7 +115,7 @@ def main() -> int:
 
     print(f"Parsing {dat_path.name} ...")
     entries = parse_dat(dat_path)
-    print(f"  Found {len(entries)} games with serial codes")
+    print(f"  Found {len(entries)} games")
 
     out_path = plugin_dir / "games.json"
     with open(out_path, "w", encoding="utf-8") as f:

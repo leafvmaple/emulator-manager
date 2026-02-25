@@ -27,6 +27,3 @@ Desktop.ini
 
 # Logs
 *.log
-
-# App data (user-specific, not to be committed)
-data/
