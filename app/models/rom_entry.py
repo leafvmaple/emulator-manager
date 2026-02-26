@@ -47,6 +47,7 @@ class RomInfo:
     signature_valid: bool | None = None
     icon_path: str = ""
     dat_crc32: list[str] | None = None  # CRC32 list from No-Intro DAT (for verification)
+    dat_id: int = -1  # Numeric ID from No-Intro DAT (-1 if unmatched or non-numeric)
 
 
 @dataclass

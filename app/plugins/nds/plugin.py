@@ -6,22 +6,30 @@ import json
 import zlib
 from pathlib import Path
 
+from typing import Any
+
 from app.models.rom_entry import RomInfo
 from app.plugins.base import GamePlugin
 from app.plugins.nds.parsers import parse_nds_header
 
-_games_db: dict[str, str] | None = None
+_games_db: dict[str, dict[str, Any]] | None = None
 _custom_db: dict[str, dict[str, str]] | None = None
 
 
-def _load_games_db() -> dict[str, str]:
-    """Lazy-load the CRC32 → name mapping from games.json."""
+def _load_games_db() -> dict[str, dict[str, Any]]:
+    """Lazy-load the CRC32 → {name, id} mapping from games.json."""
     global _games_db
     if _games_db is None:
         db_path = Path(__file__).parent / "games.json"
         if db_path.exists():
             with open(db_path, encoding="utf-8") as f:
-                _games_db = json.load(f)
+                raw = json.load(f)
+            _games_db = {}
+            for crc, val in raw.items():
+                if isinstance(val, str):
+                    _games_db[crc] = {"name": val, "id": -1}
+                else:
+                    _games_db[crc] = {"name": val.get("name", ""), "id": val.get("id", -1)}
         else:
             _games_db = {}
     assert _games_db is not None
@@ -79,6 +87,8 @@ class NDSGamePlugin(GamePlugin):
         # Compute CRC32 first
         crc = self._compute_crc32(rom_path)
 
+        dat_id = -1
+
         # Priority 1: custom DB (fan translations etc.) keyed by CRC32
         if crc:
             custom = _load_custom_db().get(crc)
@@ -89,9 +99,10 @@ class NDSGamePlugin(GamePlugin):
 
         # Priority 2: official games DB keyed by CRC32
         if not title_name and crc:
-            db_name = _load_games_db().get(crc)
-            if db_name:
-                title_name = db_name
+            db_entry = _load_games_db().get(crc)
+            if db_entry:
+                title_name = db_entry["name"]
+                dat_id = db_entry.get("id", -1)
                 dat_crc32 = [crc]
         # Priority 3: ROM header embedded name
         if not title_name:
@@ -106,6 +117,7 @@ class NDSGamePlugin(GamePlugin):
             publisher=header.publisher,
             version=header.version_string,
             dat_crc32=dat_crc32,
+            dat_id=dat_id,
         )
 
         return info

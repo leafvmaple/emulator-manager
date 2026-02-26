@@ -71,6 +71,36 @@ class RomRenameTab(QWidget):
 
         layout.addLayout(out_row)
 
+        # ── Filter row ──
+        filter_row = QHBoxLayout()
+
+        filter_row.addWidget(CaptionLabel(t("rename.filter_platform"), self))
+        self._platform_combo = ComboBox(self)
+        self._platform_combo.addItem(t("rename.filter_all"), userData="")
+        for gp in sorted(self._ctx.plugin_manager.game_plugins, key=lambda p: p.platform):
+            self._platform_combo.addItem(gp.platform.upper(), userData=gp.platform)
+        self._platform_combo.currentIndexChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self._platform_combo)
+
+        filter_row.addWidget(CaptionLabel(t("rename.filter_scrape"), self))
+        self._scrape_combo = ComboBox(self)
+        self._scrape_combo.addItem(t("rename.filter_all"), userData="")
+        self._scrape_combo.addItem(t("rename.filter_scraped"), userData="done")
+        self._scrape_combo.addItem(t("rename.filter_unscraped"), userData="none")
+        self._scrape_combo.currentIndexChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self._scrape_combo)
+
+        filter_row.addWidget(CaptionLabel(t("rename.filter_identify"), self))
+        self._identify_combo = ComboBox(self)
+        self._identify_combo.addItem(t("rename.filter_all"), userData="")
+        self._identify_combo.addItem(t("rename.filter_identified"), userData="yes")
+        self._identify_combo.addItem(t("rename.filter_unidentified"), userData="no")
+        self._identify_combo.currentIndexChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self._identify_combo)
+
+        filter_row.addStretch()
+        layout.addLayout(filter_row)
+
         # ── Template row ──
         tmpl_row = QHBoxLayout()
 
@@ -165,6 +195,10 @@ class RomRenameTab(QWidget):
             return
         self._update_checked_previews()
 
+    def _on_filter_changed(self) -> None:
+        """Re-run preview when filter selection changes."""
+        self._on_preview()
+
     def _get_template_string(self, key: str) -> str:
         from app.ui.constants import DEFAULT_TEMPLATES
         return DEFAULT_TEMPLATES.get(key, "{filename}")
@@ -189,7 +223,28 @@ class RomRenameTab(QWidget):
         if not self._ctx.rom_manager or not self._ctx.rom_library:
             return
 
-        self._entries = list(self._ctx.rom_library.all_entries())
+        all_entries = list(self._ctx.rom_library.all_entries())
+
+        # Apply filters
+        platform_filter = self._platform_combo.currentData() or ""
+        scrape_filter = self._scrape_combo.currentData() or ""
+        identify_filter = self._identify_combo.currentData() or ""
+
+        self._entries = []
+        for e in all_entries:
+            if platform_filter and e.platform != platform_filter:
+                continue
+            status = e.scrape_status or "none"
+            if scrape_filter and status != scrape_filter:
+                continue
+            if identify_filter:
+                identified = e.rom_info is not None and e.rom_info.dat_id >= 0
+                if identify_filter == "yes" and not identified:
+                    continue
+                if identify_filter == "no" and identified:
+                    continue
+            self._entries.append(e)
+
         template = self._template_edit.text().strip()
         if not template or not self._entries:
             return

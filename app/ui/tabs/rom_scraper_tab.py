@@ -146,8 +146,9 @@ class RomScraperTab(QWidget):
         rom_layout.setContentsMargins(0, 0, 0, 0)
 
         self._rom_table = TableWidget(self)
-        self._rom_table.setColumnCount(8)
+        self._rom_table.setColumnCount(9)
         self._rom_table.setHorizontalHeaderLabels([
+            t("scraper.col_dat_id"),
             t("scraper.col_filename"),
             t("scraper.col_title_id"),
             t("scraper.col_name"),
@@ -158,11 +159,9 @@ class RomScraperTab(QWidget):
             t("scraper.col_status"),
         ])
         self._rom_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
+            QHeaderView.ResizeMode.Interactive
         )
-        self._rom_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Stretch
-        )
+        self._rom_table.horizontalHeader().setStretchLastSection(True)
         self._rom_table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
         self._rom_table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self._rom_table.cellClicked.connect(self._on_rom_clicked)
@@ -228,8 +227,9 @@ class RomScraperTab(QWidget):
     # ── Data loading ──
 
     def _load_entries(self) -> None:
-        """Load ROM entries from the library and refresh the table."""
+        """Load ROM entries from the library, sorted by dat_id ascending, and refresh the table."""
         self._entries = list(self._ctx.rom_library.all_entries())
+        self._entries.sort(key=lambda e: e.rom_info.dat_id if e.rom_info else -1)
         self._refresh_rom_table()
 
     def _refresh_rom_table(self) -> None:
@@ -239,13 +239,16 @@ class RomScraperTab(QWidget):
             row = self._rom_table.rowCount()
             self._rom_table.insertRow(row)
 
+            dat_id = entry.rom_info.dat_id if entry.rom_info else -1
+            dat_id_text = str(dat_id)
             filename = Path(entry.rom_path).name if entry.rom_path else ""
             title_id = entry.rom_info.title_id if entry.rom_info else entry.game_id
             version = entry.rom_info.version if entry.rom_info else ""
 
-            self._rom_table.setItem(row, 0, QTableWidgetItem(filename))
-            self._rom_table.setItem(row, 1, QTableWidgetItem(title_id))
-            self._rom_table.setItem(row, 2, QTableWidgetItem(entry.display_name))
+            self._rom_table.setItem(row, 0, QTableWidgetItem(dat_id_text))
+            self._rom_table.setItem(row, 1, QTableWidgetItem(filename))
+            self._rom_table.setItem(row, 2, QTableWidgetItem(title_id))
+            self._rom_table.setItem(row, 3, QTableWidgetItem(entry.display_name))
 
             # CRC32 cell with color coding
             crc_item = QTableWidgetItem(entry.hash_crc32)
@@ -257,25 +260,25 @@ class RomScraperTab(QWidget):
                     crc_item.setForeground(QColor("#e74c3c"))  # red — mismatch
             elif entry.hash_crc32:
                 crc_item.setForeground(QColor("#e74c3c"))  # red — not in database
-            self._rom_table.setItem(row, 3, crc_item)
+            self._rom_table.setItem(row, 4, crc_item)
 
-            self._rom_table.setItem(row, 4, QTableWidgetItem(version))
-            self._rom_table.setItem(row, 5, QTableWidgetItem(entry.platform.upper()))
+            self._rom_table.setItem(row, 5, QTableWidgetItem(version))
+            self._rom_table.setItem(row, 6, QTableWidgetItem(entry.platform.upper()))
 
             region = entry.rom_info.region if entry.rom_info else ""
-            self._rom_table.setItem(row, 6, QTableWidgetItem(region))
+            self._rom_table.setItem(row, 7, QTableWidgetItem(region))
 
             status = entry.scrape_status or "none"
             status_text = {"none": t("scraper.status_none"), "partial": t("scraper.status_partial"), "done": t("scraper.status_done")}.get(
                 status, status
             )
-            self._rom_table.setItem(row, 7, QTableWidgetItem(status_text))
+            self._rom_table.setItem(row, 8, QTableWidgetItem(status_text))
 
     # ── ROM row click → prefill search ──
 
     def _on_rom_clicked(self, row: int, _col: int) -> None:
         """Click a ROM row to prefill the search box with its name."""
-        name_item = self._rom_table.item(row, 2)  # col 2 = game name
+        name_item = self._rom_table.item(row, 3)  # col 3 = game name
         if name_item:
             self._search.setText(name_item.text())
 
@@ -485,10 +488,10 @@ class RomScraperTab(QWidget):
             self._ctx.rom_library.save()
 
             # Refresh ROM table row
-            name_item = self._rom_table.item(rom_row, 2)  # col 2 = game name
+            name_item = self._rom_table.item(rom_row, 3)  # col 3 = game name
             if name_item:
                 name_item.setText(entry.display_name)
-            status_item = self._rom_table.item(rom_row, 6)  # col 6 = status
+            status_item = self._rom_table.item(rom_row, 8)  # col 8 = status
             if status_item:
                 status_item.setText(t("scraper.status_done"))
 

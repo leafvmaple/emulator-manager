@@ -36,6 +36,7 @@ BUILTIN_TOKENS: dict[str, str] = {
     "ext": "原始扩展名",
     "seq": "序号",
     "crc32": "CRC32 哈希",
+    "id": "DAT 序号",
 }
 
 # Regex patterns for template parsing

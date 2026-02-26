@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import tempfile
 import zipfile
 import zlib
@@ -234,12 +235,76 @@ class RomManager:
 
                 entry.rom_path = str(zip_path)
                 entry.file_size = zip_path.stat().st_size
+
+                # Derive version/region from ZIP filename (No-Intro convention)
+                if entry.rom_info is not None:
+                    fname_ver = self._extract_version_from_filename(zip_path.stem)
+                    if fname_ver:
+                        entry.rom_info.version = fname_ver
+                    fname_region = self._extract_region_from_filename(zip_path.stem)
+                    if fname_region:
+                        entry.rom_info.region = fname_region
             return entry
         finally:
             try:
                 tmp_path.unlink()
             except OSError:
                 pass
+
+    @staticmethod
+    def _extract_version_from_filename(stem: str) -> str:
+        """Extract version from No-Intro filename patterns.
+
+        - ``(Rev 1)`` → ``"1.1"``
+        - ``(Rev 2)`` → ``"1.2"``
+        - ``[1.1]`` → ``"1.1"``
+        - No match → ``""``
+        """
+        m = re.search(r"\(Rev\s+(\d+)\)", stem, re.IGNORECASE)
+        if m:
+            return f"1.{m.group(1)}"
+        m = re.search(r"\[1\.(\d+)\]", stem)
+        if m:
+            return f"1.{m.group(1)}"
+        return ""
+
+    # No-Intro region tags (full names + abbreviations)
+    _REGION_TAGS: dict[str, str] = {
+        "Japan": "Japan", "USA": "USA", "Europe": "Europe",
+        "World": "World", "Korea": "Korea", "China": "China",
+        "Taiwan": "Taiwan", "Asia": "Asia", "Australia": "Australia",
+        "Brazil": "Brazil", "Canada": "Canada", "France": "France",
+        "Germany": "Germany", "Italy": "Italy", "Spain": "Spain",
+        "Sweden": "Sweden", "Netherlands": "Netherlands",
+        # Abbreviations
+        "JP": "Japan", "JPN": "Japan",
+        "US": "USA", "U": "USA",
+        "EU": "Europe", "EUR": "Europe",
+        "KR": "Korea", "KOR": "Korea",
+        "CN": "China", "CHN": "China",
+        "TW": "Taiwan",
+        "AU": "Australia", "AUS": "Australia",
+        "BR": "Brazil", "BRA": "Brazil",
+        "CA": "Canada", "CAN": "Canada",
+        "FR": "France", "FRA": "France",
+        "DE": "Germany", "GER": "Germany",
+        "IT": "Italy", "ITA": "Italy",
+        "ES": "Spain", "SPA": "Spain",
+        "SE": "Sweden", "SWE": "Sweden",
+        "NL": "Netherlands", "NED": "Netherlands",
+        "W": "World",
+        "J": "Japan", "E": "Europe",
+    }
+
+    @staticmethod
+    def _extract_region_from_filename(stem: str) -> str:
+        """Extract region from filename brackets, e.g. '(USA)', '(Japan, USA)', or '[US]'."""
+        for m in re.finditer(r"[\(\[]([^)\]]+)[\)\]]", stem):
+            parts = [p.strip() for p in m.group(1).split(",")]
+            for part in parts:
+                if part in RomManager._REGION_TAGS:
+                    return RomManager._REGION_TAGS[part]
+        return ""
 
     @staticmethod
     def _update_rom_in_zip(
@@ -430,13 +495,14 @@ class RomManager:
 
     def _build_rename_tokens(self, entry: RomEntry) -> dict[str, str]:
         """Build template variable values from a RomEntry."""
+        info = entry.rom_info
         tokens: dict[str, str] = {
             "platform": entry.platform,
             "ext": Path(entry.rom_path).suffix.lstrip("."),
             "crc32": entry.hash_crc32 or "",
+            "id": str(info.dat_id) if info and info.dat_id >= 0 else "",
         }
 
-        info = entry.rom_info
         if info:
             tokens.update(
                 {

@@ -8,19 +8,21 @@ import tempfile
 import zlib
 from pathlib import Path
 
+from typing import Any
+
 from loguru import logger
 
 from app.models.rom_entry import RomInfo
 from app.plugins.base import GamePlugin
 from app.plugins.nes.parsers import parse_nes_header
 
-_games_db: dict[str, str] | None = None
+_games_db: dict[str, dict[str, Any]] | None = None
 _dat_headers: list[bytes] | None = None
 _custom_db: dict[str, dict[str, str]] | None = None
 
 
-def _load_games_db() -> dict[str, str]:
-    """Lazy-load the CRC32 → name mapping from games.json."""
+def _load_games_db() -> dict[str, dict[str, Any]]:
+    """Lazy-load the CRC32 → {name, id} mapping from games.json."""
     global _games_db
     if _games_db is None:
         db_path = Path(__file__).parent / "games.json"
@@ -29,7 +31,10 @@ def _load_games_db() -> dict[str, str]:
                 raw = json.load(f)
             _games_db = {}
             for crc, val in raw.items():
-                _games_db[crc] = val if isinstance(val, str) else val.get("name", "")
+                if isinstance(val, str):
+                    _games_db[crc] = {"name": val, "id": -1}
+                else:
+                    _games_db[crc] = {"name": val.get("name", ""), "id": val.get("id", -1)}
         else:
             _games_db = {}
     assert _games_db is not None
@@ -83,20 +88,54 @@ _REGION_TAGS: dict[str, str] = {
     "Spain": "Spain",
     "Sweden": "Sweden",
     "Netherlands": "Netherlands",
+    # Abbreviations
+    "JP": "Japan", "JPN": "Japan",
+    "US": "USA", "U": "USA",
+    "EU": "Europe", "EUR": "Europe",
+    "KR": "Korea", "KOR": "Korea",
+    "CN": "China", "CHN": "China",
+    "TW": "Taiwan",
+    "AU": "Australia", "AUS": "Australia",
+    "BR": "Brazil", "BRA": "Brazil",
+    "CA": "Canada", "CAN": "Canada",
+    "FR": "France", "FRA": "France",
+    "DE": "Germany", "GER": "Germany",
+    "IT": "Italy", "ITA": "Italy",
+    "ES": "Spain", "SPA": "Spain",
+    "SE": "Sweden", "SWE": "Sweden",
+    "NL": "Netherlands", "NED": "Netherlands",
+    "W": "World",
+    "J": "Japan", "E": "Europe",
 }
 
 
 def _extract_region_from_filename(stem: str) -> str:
-    """Extract region from No-Intro style filename brackets, e.g. '(Japan)' or '(USA, Europe)'."""
-    m = re.search(r"\(([^)]+)\)", stem)
-    if not m:
-        return ""
-    content = m.group(1)
-    # Check each comma-separated part
-    parts = [p.strip() for p in content.split(",")]
-    for part in parts:
-        if part in _REGION_TAGS:
-            return _REGION_TAGS[part]
+    """Extract region from filename brackets, e.g. '(Japan)', '(USA, Europe)', or '[US]'."""
+    for m in re.finditer(r"[\(\[]([^)\]]+)[\)\]]", stem):
+        parts = [p.strip() for p in m.group(1).split(",")]
+        for part in parts:
+            if part in _REGION_TAGS:
+                return _REGION_TAGS[part]
+    return ""
+
+
+def _extract_version_from_filename(stem: str) -> str:
+    """Extract version from filename patterns like '(Rev 1)' or '[1.1]'.
+
+    - ``(Rev 1)`` / ``(Rev A)`` → ``"1.1"``
+    - ``(Rev 2)`` → ``"1.2"``
+    - ``[1.1]`` → ``"1.1"``
+    - ``[1.2]`` → ``"1.2"``
+    - No match → ``""``
+    """
+    # Match (Rev N) where N is a digit
+    m = re.search(r"\(Rev\s+(\d+)\)", stem, re.IGNORECASE)
+    if m:
+        return f"1.{m.group(1)}"
+    # Match [1.N] where N is a digit
+    m = re.search(r"\[1\.(\d+)\]", stem)
+    if m:
+        return f"1.{m.group(1)}"
     return ""
 
 
@@ -131,6 +170,7 @@ class NESGamePlugin(GamePlugin):
         title_name = ""
         region = _extract_region_from_filename(rom_path.stem) or header.region
         dat_crc32: list[str] | None = None
+        dat_id = -1
 
         # Priority 1: custom DB (fan translations etc.) keyed by CRC32
         if crc:
@@ -142,9 +182,10 @@ class NESGamePlugin(GamePlugin):
 
         # Priority 2: official games DB keyed by CRC32 (direct match)
         if not title_name and crc:
-            db_name = _load_games_db().get(crc)
-            if db_name:
-                title_name = db_name
+            db_entry = _load_games_db().get(crc)
+            if db_entry:
+                title_name = db_entry["name"]
+                dat_id = db_entry.get("id", -1)
                 dat_crc32 = [crc]
 
         # Priority 3: header-based matching — try each known DAT header
@@ -153,7 +194,9 @@ class NESGamePlugin(GamePlugin):
         if not title_name and crc:
             matched_crc = self._match_with_dat_header(rom_path)
             if matched_crc:
-                title_name = _load_games_db().get(matched_crc, "")
+                db_entry = _load_games_db().get(matched_crc)
+                title_name = db_entry["name"] if db_entry else ""
+                dat_id = db_entry.get("id", -1) if db_entry else -1
                 dat_crc32 = [matched_crc]
                 crc = matched_crc
 
@@ -161,14 +204,17 @@ class NESGamePlugin(GamePlugin):
         if not title_name:
             title_name = rom_path.stem
 
+        version = _extract_version_from_filename(rom_path.stem) or header.version_string
+
         return RomInfo(
             title_id=crc or rom_path.stem,
             title_name=title_name,
             content_type="raw",
             file_type="base",
             region=region,
-            version=header.version_string,
+            version=version,
             dat_crc32=dat_crc32,
+            dat_id=dat_id,
         )
 
     # ── Game ID extraction ──
