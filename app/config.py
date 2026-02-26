@@ -48,6 +48,9 @@ class Config:
         "rom_directories": {},
         # Scraper
         "scraper": {
+            "proxy_protocol": "http",
+            "proxy_host": "",
+            "proxy_port": "",
             "igdb_client_id": "",
             "igdb_client_secret": "",
             "screenscraper_dev_id": "",

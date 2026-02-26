@@ -106,11 +106,20 @@ class SaveBackupTab(QWidget):
         layout.addWidget(self._table)
 
     def _on_refresh(self) -> None:
-        """Refresh save list from scanner."""
+        """Refresh save list from scanner in a background thread."""
         if not self._ctx.scanner:
             return
-        self._saves = self._ctx.scanner.scan_all_saves()
+        from app.ui.tabs.save_library_tab import SaveScanWorker
+
+        self._refresh_worker = SaveScanWorker(self._ctx, self)
+        self._refresh_worker.finished.connect(self._on_refresh_finished)
+        self._refresh_worker.start()
+
+    def _on_refresh_finished(self, saves: list) -> None:
+        """Handle refresh completion."""
+        self._saves = saves
         self._refresh_table()
+        self._refresh_worker = None
 
     def _refresh_table(self) -> None:
         self._table.setRowCount(0)

@@ -39,11 +39,13 @@ def clean_game_name(raw_name: str) -> str:
     return cleaned or raw_name
 
 
-def parse_dat(dat_path: Path) -> dict[str, dict[str, str | list[str]]]:
-    """Parse a No-Intro DAT XML and return {key: {name, crc32: [...]}}.
+def parse_dat(dat_path: Path) -> tuple[dict, list[str]]:
+    """Parse a No-Intro DAT XML and return ``(entries, unique_headers)``.
 
-    For DATs with serial codes (majority of entries have serials), the key is the serial.
-    For DATs without serials (NES, SNES, etc.), the key is the CRC32 hash.
+    *entries*: ``{serial: {name, crc32: [...]}}`` for serial-keyed DATs,
+              ``{CRC32: name}`` for CRC-keyed DATs (NES, SNES …).
+    *unique_headers*: deduplicated list of ROM header hex strings found in
+                      the DAT (e.g. iNES headers from NES Headered DATs).
     """
     tree = ET.parse(dat_path)
     root = tree.getroot()
@@ -63,8 +65,9 @@ def parse_dat(dat_path: Path) -> dict[str, dict[str, str | list[str]]]:
     # Use serial as key if majority (>50%) have valid serials
     use_serial = serial_count > total_roms * 0.5
 
-    # Second pass: build entries
-    entries: dict[str, dict[str, str | list[str]]] = {}
+    # Second pass: build entries and collect unique headers
+    entries: dict = {}
+    seen_headers: set[str] = set()
 
     for game_el in root.iter("game"):
         game_name = game_el.get("name", "")
@@ -74,7 +77,12 @@ def parse_dat(dat_path: Path) -> dict[str, dict[str, str | list[str]]]:
         for rom_el in game_el.iter("rom"):
             serial = (rom_el.get("serial") or "").strip()
             crc32 = (rom_el.get("crc") or "").strip().upper()
+            header = (rom_el.get("header") or "").strip()
             cleaned = clean_game_name(game_name)
+
+            # Collect unique headers
+            if header:
+                seen_headers.add(header.replace(" ", ""))
 
             valid_serial = serial and not serial.startswith("!") and serial.lower() != "n/a"
 
@@ -88,11 +96,11 @@ def parse_dat(dat_path: Path) -> dict[str, dict[str, str | list[str]]]:
                     if crc32 not in crc_list:
                         crc_list.append(crc32)
             elif not use_serial and crc32:
-                # Use CRC32 as key (NES, SNES, etc.)
+                # CRC → name (simple string value)
                 if crc32 not in entries:
-                    entries[crc32] = {"name": cleaned, "crc32": [crc32]}
+                    entries[crc32] = cleaned
 
-    return entries
+    return entries, sorted(seen_headers)
 
 
 def main() -> int:
@@ -114,14 +122,20 @@ def main() -> int:
         return 1
 
     print(f"Parsing {dat_path.name} ...")
-    entries = parse_dat(dat_path)
+    entries, unique_headers = parse_dat(dat_path)
     print(f"  Found {len(entries)} games")
 
     out_path = plugin_dir / "games.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(entries, f, ensure_ascii=False, indent=2)
-
     print(f"  Written to {out_path}")
+
+    if unique_headers:
+        hdr_path = plugin_dir / "header.json"
+        with open(hdr_path, "w", encoding="utf-8") as f:
+            json.dump(unique_headers, f, indent=2)
+        print(f"  Written {len(unique_headers)} unique headers to {hdr_path}")
+
     return 0
 
 

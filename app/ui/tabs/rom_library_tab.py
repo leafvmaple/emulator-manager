@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
@@ -29,6 +29,23 @@ if TYPE_CHECKING:
     from app.models.rom_entry import RomEntry
 
 
+class RomScanWorker(QThread):
+    """Background worker for ROM directory scanning."""
+
+    finished = Signal(int)  # number of new entries
+
+    def __init__(self, ctx: AppContext, parent=None) -> None:
+        super().__init__(parent)
+        self._ctx = ctx
+
+    def run(self) -> None:
+        try:
+            new_entries = self._ctx.rom_manager.scan_directories()
+            self.finished.emit(len(new_entries))
+        except Exception:
+            self.finished.emit(0)
+
+
 class RomLibraryTab(QWidget):
     """ROM library view with vertical card list, search, and platform filter."""
 
@@ -40,6 +57,8 @@ class RomLibraryTab(QWidget):
         self._entries: list[RomEntry] = []
         self._cards: list[GameCard] = []
         self._selected_card: GameCard | None = None
+        self._worker: RomScanWorker | None = None
+        self._dirty = True  # needs rebuild on next show
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 16, 0, 0)
@@ -108,9 +127,19 @@ class RomLibraryTab(QWidget):
     # ── Lifecycle ──
 
     def showEvent(self, event) -> None:  # noqa: ANN001
-        """Reload data from rom_library every time the tab is shown."""
+        """Reload data from rom_library only when data has changed."""
         super().showEvent(event)
-        self._load_from_library()
+        # Quick check: if entry count changed, mark dirty
+        current_count = self._ctx.rom_library.count
+        if current_count != len(self._entries):
+            self._dirty = True
+        if self._dirty:
+            self._load_from_library()
+            self._dirty = False
+
+    def mark_dirty(self) -> None:
+        """Mark the tab as needing a refresh on next show."""
+        self._dirty = True
 
     # ── Data loading ──
 
@@ -124,16 +153,23 @@ class RomLibraryTab(QWidget):
         self._count_badge.setText(str(n))
 
     def _on_scan(self) -> None:
-        """Trigger ROM directory scan."""
+        """Trigger ROM directory scan in a background thread."""
         if not self._ctx.rom_manager:
             return
         self._scan_btn.setEnabled(False)
         self._status_label.setText(t("rom_lib.scanning"))
 
-        self._ctx.rom_manager.scan_directories()
-        self._load_from_library()
+        self._worker = RomScanWorker(self._ctx, self)
+        self._worker.finished.connect(self._on_scan_finished)
+        self._worker.start()
 
+    def _on_scan_finished(self, new_count: int) -> None:
+        """Handle scan completion — refresh UI on the main thread."""
+        self._dirty = True
+        self._load_from_library()
+        self._dirty = False
         self._scan_btn.setEnabled(True)
+        self._worker = None
 
     # ── Card management ──
 

@@ -79,6 +79,10 @@ class RomLibrary:
     def make_key(platform: str, game_id: str) -> str:
         return f"{platform}:{game_id}"
 
+    def clear(self) -> None:
+        """Remove all entries."""
+        self._roms.clear()
+
     def add(self, entry: RomEntry) -> None:
         """Add or update a ROM entry."""
         if not entry.added_at:
@@ -94,14 +98,6 @@ class RomLibrary:
         key = self.make_key(platform, game_id)
         return self._roms.get(key)
 
-    def find_by_path(self, rom_path: str) -> RomEntry | None:
-        """Find ROM entry by file path."""
-        normalized = str(Path(rom_path).resolve())
-        for entry in self._roms.values():
-            if str(Path(entry.rom_path).resolve()) == normalized:
-                return entry
-        return None
-
     def find_by_hash(self, crc32: str) -> list[RomEntry]:
         """Find ROM entries by CRC32 hash."""
         return [e for e in self._roms.values() if e.hash_crc32 == crc32]
@@ -116,7 +112,7 @@ class RomLibrary:
         return [e for e in self._roms.values() if e.emulator == emulator]
 
     def update_path(self, old_path: str, new_path: str) -> None:
-        """Update ROM path after rename — updates both the entry and preserves the key."""
+        """Update ROM path after rename."""
         for entry in self._roms.values():
             if entry.rom_path == old_path:
                 entry.rom_path = new_path

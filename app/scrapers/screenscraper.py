@@ -38,6 +38,17 @@ _SYSTEM_MAP: dict[str, int] = {
 }
 
 
+def _build_proxy_url(config: Any) -> str:
+    """Assemble proxy URL from config fields (protocol/host/port)."""
+    scraper_cfg = config.get("scraper", {})
+    host = scraper_cfg.get("proxy_host", "")
+    if not host:
+        return ""
+    proto = scraper_cfg.get("proxy_protocol", "http")
+    port = scraper_cfg.get("proxy_port", "")
+    return f"{proto}://{host}:{port}" if port else f"{proto}://{host}"
+
+
 class ScreenScraperProvider(ScraperProvider):
     """ScreenScraper.fr game metadata provider."""
 
@@ -48,12 +59,22 @@ class ScreenScraperProvider(ScraperProvider):
         username: str = "",
         password: str = "",
         software_name: str = "EmulatorManager",
+        config: Any = None,
     ) -> None:
         self._dev_id = dev_id
         self._dev_password = dev_password
         self._username = username
         self._password = password
         self._software_name = software_name
+        self._config = config
+
+    def _http_client(self, **kwargs: Any) -> httpx.Client:
+        """Create an httpx Client with optional proxy (read from config each time)."""
+        if self._config:
+            proxy = _build_proxy_url(self._config)
+            if proxy:
+                kwargs.setdefault("proxy", proxy)
+        return httpx.Client(**kwargs)
 
     @property
     def name(self) -> str:
@@ -97,13 +118,13 @@ class ScreenScraperProvider(ScraperProvider):
         )
 
         try:
-            resp = httpx.get(
-                f"{_API_BASE}/jeuRecherche.php",
-                params=params,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            with self._http_client(timeout=30) as client:
+                resp = client.get(
+                    f"{_API_BASE}/jeuRecherche.php",
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
         except Exception as e:
             logger.error(f"ScreenScraper search failed: {e}")
             return []
@@ -116,13 +137,13 @@ class ScreenScraperProvider(ScraperProvider):
         params = self._build_params(gameid=provider_id)
 
         try:
-            resp = httpx.get(
-                f"{_API_BASE}/jeuInfos.php",
-                params=params,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            with self._http_client(timeout=30) as client:
+                resp = client.get(
+                    f"{_API_BASE}/jeuInfos.php",
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
         except Exception as e:
             logger.error(f"ScreenScraper get_by_id failed: {e}")
             return None

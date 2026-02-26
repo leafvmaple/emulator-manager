@@ -19,6 +19,7 @@ class RenameToken:
 
 # All built-in template variables
 BUILTIN_TOKENS: dict[str, str] = {
+    "title": "标题（跟随应用语言）",
     "title_zh": "中文名",
     "title_en": "英文名",
     "title_ja": "日文名",

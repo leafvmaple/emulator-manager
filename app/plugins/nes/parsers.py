@@ -44,9 +44,7 @@ class NESHeaderInfo:
 
     @property
     def region(self) -> str:
-        if self.tv_system == "PAL":
-            return "Europe"
-        return ""
+        return self.tv_system  # "NTSC" or "PAL"
 
     @property
     def version_string(self) -> str:

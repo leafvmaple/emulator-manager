@@ -8,14 +8,14 @@ from pathlib import Path
 
 from app.models.rom_entry import RomInfo
 from app.plugins.base import GamePlugin
-from app.plugins.snes.parsers import parse_snes_header
+from app.plugins.snes.parsers import SNESHeaderInfo, parse_snes_header
 
-_games_db: dict[str, dict[str, str | list[str]]] | None = None
+_games_db: dict[str, str] | None = None
 _custom_db: dict[str, dict[str, str]] | None = None
 
 
-def _load_games_db() -> dict[str, dict[str, str | list[str]]]:
-    """Lazy-load the CRC32 → {name, crc32} mapping from games.json."""
+def _load_games_db() -> dict[str, str]:
+    """Lazy-load the CRC32 → name mapping from games.json."""
     global _games_db
     if _games_db is None:
         db_path = Path(__file__).parent / "games.json"
@@ -67,35 +67,40 @@ class SNESGamePlugin(GamePlugin):
     def parse_rom_info(self, rom_path: Path) -> RomInfo | None:
         header = parse_snes_header(rom_path)
 
-        crc = self._compute_crc32(rom_path)
+        crc_full, crc_nocopier = self._compute_crc32_pair(rom_path, header)
         title_name = ""
         region = ""
         publisher = ""
         version = "1.0"
-        dat_crc32: list[str] = []
+        dat_crc32: list[str] | None = None
+        matched_crc = ""
 
         if header:
             region = header.region
             publisher = header.publisher
             version = header.version_string
 
-        # Priority 1: custom DB (fan translations etc.) keyed by CRC32
-        if crc:
+        # Try matching with both full and no-copier-header CRC32
+        for crc in (crc_full, crc_nocopier):
+            if not crc:
+                continue
+            # Priority 1: custom DB
             custom = _load_custom_db().get(crc)
             if custom:
                 title_name = custom["name"]
                 region = custom.get("region", region)
+                matched_crc = crc
+                dat_crc32 = [crc]
+                break
+            # Priority 2: official games DB
+            db_name = _load_games_db().get(crc)
+            if db_name:
+                title_name = db_name
+                matched_crc = crc
+                dat_crc32 = [crc]
+                break
 
-        # Priority 2: official games DB keyed by CRC32
-        if not title_name and crc:
-            db_entry = _load_games_db().get(crc)
-            if db_entry:
-                title_name = str(db_entry["name"])
-                raw_crc = db_entry.get("crc32", [])
-                if isinstance(raw_crc, list):
-                    dat_crc32 = raw_crc
-                elif raw_crc:
-                    dat_crc32 = [str(raw_crc)]
+        crc = matched_crc or crc_full
 
         # Priority 3: ROM header embedded title
         if not title_name and header:
@@ -113,7 +118,7 @@ class SNESGamePlugin(GamePlugin):
             region=region,
             publisher=publisher,
             version=version,
-            dat_crc32=dat_crc32 or None,
+            dat_crc32=dat_crc32,
         )
 
         return info
@@ -124,12 +129,17 @@ class SNESGamePlugin(GamePlugin):
         """
         Extract a canonical game ID from a SNES ROM.
 
-        Uses CRC32 as the primary key since most SNES ROMs lack serial codes.
+        Uses CRC32 as the primary key. Tries both with and without
+        copier header to match the database.
         """
-        crc = self._compute_crc32(rom_path)
-        if crc:
-            return crc
-        return rom_path.stem
+        header = parse_snes_header(rom_path)
+        crc_full, crc_nocopier = self._compute_crc32_pair(rom_path, header)
+        db = _load_games_db()
+        custom = _load_custom_db()
+        for crc in (crc_full, crc_nocopier):
+            if crc and (crc in db or crc in custom):
+                return crc
+        return crc_full or rom_path.stem
 
     # ── Scraper platform IDs ──
 
@@ -139,8 +149,8 @@ class SNESGamePlugin(GamePlugin):
     # ── Helpers ──
 
     @staticmethod
-    def _compute_crc32(path: Path, max_size: int = 64 * 1024 * 1024) -> str:
-        """Compute CRC32 for the ROM file (skip files > max_size)."""
+    def _compute_crc32_raw(path: Path, max_size: int = 64 * 1024 * 1024) -> str:
+        """Compute CRC32 for the entire file."""
         try:
             if path.stat().st_size > max_size:
                 return ""
@@ -154,3 +164,29 @@ class SNESGamePlugin(GamePlugin):
             return f"{crc & 0xFFFFFFFF:08X}"
         except OSError:
             return ""
+
+    @staticmethod
+    def _compute_crc32_pair(
+        path: Path, header: SNESHeaderInfo | None, max_size: int = 64 * 1024 * 1024
+    ) -> tuple[str, str]:
+        """Compute both full and headerless CRC32 for a SNES ROM.
+
+        Returns (crc_full, crc_without_copier_header).
+        If the file has a 512-byte copier header, the second CRC
+        is computed without it. Otherwise both values are the same.
+        """
+        try:
+            size = path.stat().st_size
+            if size > max_size:
+                return ("", "")
+            with open(path, "rb") as f:
+                data = f.read()
+            crc_full = f"{zlib.crc32(data) & 0xFFFFFFFF:08X}"
+            has_copier = header.has_copier_header if header else (size % 1024 == 512)
+            if has_copier and len(data) > 512:
+                crc_nocopier = f"{zlib.crc32(data[512:]) & 0xFFFFFFFF:08X}"
+            else:
+                crc_nocopier = crc_full
+            return (crc_full, crc_nocopier)
+        except OSError:
+            return ("", "")

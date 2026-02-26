@@ -10,25 +10,18 @@ from app.models.rom_entry import RomInfo
 from app.plugins.base import GamePlugin
 from app.plugins.nds.parsers import parse_nds_header
 
-_games_db: dict[str, dict[str, str]] | None = None
+_games_db: dict[str, str] | None = None
 _custom_db: dict[str, dict[str, str]] | None = None
 
 
-def _load_games_db() -> dict[str, dict[str, str]]:
-    """Lazy-load the serial → {name, crc32} mapping from games.json."""
+def _load_games_db() -> dict[str, str]:
+    """Lazy-load the CRC32 → name mapping from games.json."""
     global _games_db
     if _games_db is None:
         db_path = Path(__file__).parent / "games.json"
         if db_path.exists():
             with open(db_path, encoding="utf-8") as f:
-                raw = json.load(f)
-            # Support both old format {serial: name} and new {serial: {name, crc32}}
-            _games_db = {}
-            for k, v in raw.items():
-                if isinstance(v, str):
-                    _games_db[k] = {"name": v, "crc32": ""}
-                else:
-                    _games_db[k] = v
+                _games_db = json.load(f)
         else:
             _games_db = {}
     assert _games_db is not None
@@ -81,27 +74,25 @@ class NDSGamePlugin(GamePlugin):
 
         title_name = ""
         region = header.region
+        dat_crc32: list[str] | None = None
+
+        # Compute CRC32 first
+        crc = self._compute_crc32(rom_path)
 
         # Priority 1: custom DB (fan translations etc.) keyed by CRC32
-        crc = self._compute_crc32(rom_path)
         if crc:
             custom = _load_custom_db().get(crc)
             if custom:
                 title_name = custom["name"]
                 region = custom.get("region", region)
+                dat_crc32 = [crc]
 
-        # Priority 2: official games DB keyed by serial
-        dat_crc32: list[str] = []
-        if not title_name and header.game_code:
-            db_entry = _load_games_db().get(header.game_code.upper())
-            if db_entry:
-                title_name = db_entry["name"]
-                raw_crc = db_entry.get("crc32", [])
-                if isinstance(raw_crc, list):
-                    dat_crc32 = raw_crc
-                elif raw_crc:
-                    dat_crc32 = [raw_crc]
-
+        # Priority 2: official games DB keyed by CRC32
+        if not title_name and crc:
+            db_name = _load_games_db().get(crc)
+            if db_name:
+                title_name = db_name
+                dat_crc32 = [crc]
         # Priority 3: ROM header embedded name
         if not title_name:
             title_name = header.game_title
@@ -114,7 +105,7 @@ class NDSGamePlugin(GamePlugin):
             region=region,
             publisher=header.publisher,
             version=header.version_string,
-            dat_crc32=dat_crc32 or None,
+            dat_crc32=dat_crc32,
         )
 
         return info

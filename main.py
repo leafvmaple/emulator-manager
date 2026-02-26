@@ -62,6 +62,7 @@ def create_context() -> AppContext:
             IGDBProvider(
                 client_id=scraper_config["igdb_client_id"],
                 client_secret=scraper_config.get("igdb_client_secret", ""),
+                config=config,
             )
         )
     if scraper_config.get("screenscraper_dev_id"):
@@ -73,6 +74,7 @@ def create_context() -> AppContext:
                 dev_password=scraper_config.get("screenscraper_dev_password", ""),
                 username=scraper_config.get("screenscraper_username", ""),
                 password=scraper_config.get("screenscraper_password", ""),
+                config=config,
             )
         )
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
+import zipfile
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +14,7 @@ from loguru import logger
 from app.config import Config
 from app.core.rename_engine import RenameEngine
 from app.data.rom_library import RomLibrary
-from app.models.rom_entry import RomEntry, RomInfo
+from app.models.rom_entry import RomEntry
 from app.plugins.base import GamePlugin
 from app.plugins.plugin_manager import PluginManager
 
@@ -42,39 +44,36 @@ class RomManager:
 
     def scan_directories(self) -> list[RomEntry]:
         """
-        Scan all configured ROM directories and return new entries.
+        Scan all configured ROM directories and return all entries.
 
-        ``config.rom_directories`` can be either:
-          - ``dict[str, list[str]]``: ``{platform: [dir_paths]}``
-          - ``list[str]``: flat list of directories (auto-detect platform)
+        Clears the library first, then rebuilds from scratch.
         """
         raw: dict[str, list[str]] | list[str] = self._config.get("rom_directories", {})
-        new_entries: list[RomEntry] = []
+
+        self._library.clear()
+        entries: list[RomEntry] = []
 
         if isinstance(raw, dict):
-            # {platform: [dir_paths]} format
             for platform, dirs in raw.items():
                 game_plugin = self._plugins.get_game_plugin(platform)
                 if game_plugin is None:
                     logger.warning(f"No game plugin for platform '{platform}', skipping")
                     continue
-                self._scan_dirs_with_plugin(dirs, game_plugin, new_entries)
+                self._scan_dirs_with_plugin(dirs, game_plugin, entries)
         elif isinstance(raw, list):
-            # Flat list — try every game plugin's extensions per file
-            self._scan_dirs_auto(raw, new_entries)
+            self._scan_dirs_auto(raw, entries)
         else:
             logger.warning(f"Unexpected rom_directories type: {type(raw)}")
 
-        if new_entries:
-            logger.info(f"Scan complete — {len(new_entries)} new ROM(s) indexed")
+        logger.info(f"Scan complete — {len(entries)} ROM(s) indexed")
         self._library.save()
-        return new_entries
+        return entries
 
     def _scan_dirs_with_plugin(
         self,
         dirs: list[str],
         game_plugin: GamePlugin,
-        new_entries: list[RomEntry],
+        entries: list[RomEntry],
     ) -> None:
         """Scan directories using a specific game plugin."""
         extensions = set(game_plugin.get_rom_extensions())
@@ -87,26 +86,22 @@ class RomManager:
             for file in dir_p.rglob("*"):
                 if not file.is_file():
                     continue
-                if file.suffix.lower() not in extensions:
+                suffix = file.suffix.lower()
+                if suffix == ".zip":
+                    entry = self._create_entry_from_zip(file, game_plugin)
+                elif suffix in extensions:
+                    entry = self._create_entry(file, game_plugin)
+                else:
                     continue
-
-                entry = self._create_entry(file, game_plugin)
                 if entry is None:
                     continue
 
-                existing = self._library.get(entry.platform, entry.game_id)
-                if existing is None:
-                    self._library.add(entry)
-                    new_entries.append(entry)
-                    logger.debug(f"Indexed ROM: {file.name} → {entry.game_id}")
-                else:
-                    if entry.rom_info:
-                        self._refresh_rom_info(existing, entry.rom_info)
-                    if entry.hash_crc32:
-                        existing.hash_crc32 = entry.hash_crc32
+                self._library.add(entry)
+                entries.append(entry)
+                logger.debug(f"Indexed ROM: {file.name} → {entry.game_id}")
 
     def _scan_dirs_auto(
-        self, dirs: list[str], new_entries: list[RomEntry]
+        self, dirs: list[str], entries: list[RomEntry]
     ) -> None:
         """Scan directories, auto-detecting platform by file extension."""
         # Build extension → GamePlugin lookup
@@ -124,24 +119,22 @@ class RomManager:
             for file in dir_p.rglob("*"):
                 if not file.is_file():
                     continue
-                game_plugin = ext_map.get(file.suffix.lower())
-                if game_plugin is None:
-                    continue
+                suffix = file.suffix.lower()
 
-                entry = self._create_entry(file, game_plugin)
+                if suffix == ".zip":
+                    # Peek inside zip to determine plugin
+                    entry = self._create_entry_from_zip_auto(file, ext_map)
+                else:
+                    game_plugin = ext_map.get(suffix)
+                    if game_plugin is None:
+                        continue
+                    entry = self._create_entry(file, game_plugin)
                 if entry is None:
                     continue
 
-                existing = self._library.get(entry.platform, entry.game_id)
-                if existing is None:
-                    self._library.add(entry)
-                    new_entries.append(entry)
-                    logger.debug(f"Indexed ROM: {file.name} → {entry.game_id}")
-                else:
-                    if entry.rom_info:
-                        self._refresh_rom_info(existing, entry.rom_info)
-                    if entry.hash_crc32:
-                        existing.hash_crc32 = entry.hash_crc32
+                self._library.add(entry)
+                entries.append(entry)
+                logger.debug(f"Indexed ROM: {file.name} → {entry.game_id}")
 
     # ── Entry creation ──
 
@@ -162,39 +155,115 @@ class RomManager:
             if resolved:
                 display_name = resolved
 
+        raw_crc = self._compute_crc32(rom_path)
+        # If the plugin matched via DAT (e.g. NES header normalization),
+        # use the DAT CRC so the UI can show a verified match.
+        if rom_info and rom_info.dat_crc32:
+            hash_crc = rom_info.dat_crc32[0]
+        else:
+            hash_crc = raw_crc
+
         entry = RomEntry(
             rom_path=str(rom_path),
             platform=game_plugin.platform,
             emulator="",  # ROM entries are platform-scoped, not emulator-scoped
             game_id=game_id,
             file_size=rom_path.stat().st_size,
-            hash_crc32=self._compute_crc32(rom_path),
+            hash_crc32=hash_crc,
             added_at=datetime.now(timezone.utc).isoformat(),
             rom_info=rom_info,
         )
 
         return entry
 
-    @staticmethod
-    def _refresh_rom_info(existing: RomEntry, new_info: RomInfo) -> None:
-        """Update an existing entry's rom_info from a fresh parse.
+    def _create_entry_from_zip(
+        self, zip_path: Path, game_plugin: GamePlugin
+    ) -> RomEntry | None:
+        """Extract ROM from zip, parse with *game_plugin*, return entry."""
+        real_exts = {e for e in game_plugin.get_rom_extensions() if e != ".zip"}
+        return self._process_zip(zip_path, real_exts, game_plugin)
 
-        Only overwrites fields that come from the plugin (title_name, region,
-        publisher, version, etc.).
-        Scraper-populated fields (title_name_zh/en/ja, icon_path …) are kept.
-        """
-        old = existing.rom_info
-        if old is None:
-            existing.rom_info = new_info
-            return
-        old.title_name = new_info.title_name
-        old.title_id = new_info.title_id or old.title_id
-        old.region = new_info.region or old.region
-        old.publisher = new_info.publisher or old.publisher
-        old.version = new_info.version  # always overwrite from plugin
-        old.file_type = new_info.file_type or old.file_type
-        old.content_type = new_info.content_type or old.content_type
-        old.dat_crc32 = new_info.dat_crc32 or old.dat_crc32
+    def _create_entry_from_zip_auto(
+        self, zip_path: Path, ext_map: dict[str, GamePlugin]
+    ) -> RomEntry | None:
+        """Open zip, detect plugin from inner file extension, parse ROM."""
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                for name in zf.namelist():
+                    inner_ext = Path(name).suffix.lower()
+                    plugin = ext_map.get(inner_ext)
+                    if plugin is not None:
+                        real_exts = {e for e in plugin.get_rom_extensions() if e != ".zip"}
+                        return self._process_zip(zip_path, real_exts, plugin)
+        except (zipfile.BadZipFile, OSError) as e:
+            logger.debug(f"Cannot open zip '{zip_path.name}': {e}")
+        return None
+
+    def _process_zip(
+        self, zip_path: Path, rom_exts: set[str], game_plugin: GamePlugin
+    ) -> RomEntry | None:
+        """Core zip processing: extract first matching ROM to a temp file."""
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                rom_name: str | None = None
+                for name in zf.namelist():
+                    if Path(name).suffix.lower() in rom_exts:
+                        rom_name = name
+                        break
+                if rom_name is None:
+                    return None
+
+                original_data = zf.read(rom_name)
+                suffix = Path(rom_name).suffix
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(original_data)
+                    tmp_path = Path(tmp.name)
+        except (zipfile.BadZipFile, OSError, KeyError) as e:
+            logger.debug(f"Failed to extract from zip '{zip_path.name}': {e}")
+            return None
+
+        try:
+            entry = self._create_entry(tmp_path, game_plugin)
+            if entry is not None:
+                # If the plugin modified the ROM (e.g. NES header fix),
+                # propagate the change back into the ZIP archive.
+                with open(tmp_path, "rb") as f:
+                    fixed_data = f.read()
+                if fixed_data != original_data:
+                    self._update_rom_in_zip(zip_path, rom_name, fixed_data)
+
+                entry.rom_path = str(zip_path)
+                entry.file_size = zip_path.stat().st_size
+            return entry
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _update_rom_in_zip(
+        zip_path: Path, rom_name: str, fixed_data: bytes
+    ) -> None:
+        """Rewrite a ZIP archive with updated ROM data; backup first."""
+        import shutil
+
+        other_entries: list[tuple[str, bytes]] = []
+        with zipfile.ZipFile(zip_path) as zf:
+            for name in zf.namelist():
+                if name != rom_name:
+                    other_entries.append((name, zf.read(name)))
+
+        bak = zip_path.with_suffix(zip_path.suffix + ".bak")
+        if not bak.exists():
+            shutil.copy2(zip_path, bak)
+            logger.info(f"Backup: {zip_path.name} → {bak.name}")
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(rom_name, fixed_data)
+            for name, data in other_entries:
+                zf.writestr(name, data)
+        logger.info(f"Updated ROM in ZIP: {zip_path.name}/{rom_name}")
 
     # ── Hashing ──
 
@@ -330,6 +399,35 @@ class RomManager:
 
         return results
 
+    # Full region name → short code
+    _REGION_SHORT: dict[str, str] = {
+        "japan": "JP",
+        "usa": "US",
+        "europe": "EU",
+        "europe (alt)": "EU",
+        "china": "CN",
+        "taiwan": "TW",
+        "hong kong": "HK",
+        "korea": "KR",
+        "international": "INT",
+        "world": "W",
+        "asia": "AS",
+        "australia": "AU",
+        "germany": "DE",
+        "france": "FR",
+        "spain": "ES",
+        "italy": "IT",
+        "netherlands": "NL",
+        "sweden": "SE",
+        "finland": "FI",
+        "denmark": "DK",
+        "canada": "CA",
+        "brazil": "BR",
+        "indonesia": "ID",
+        "ntsc": "US",
+        "pal": "EU",
+    }
+
     def _build_rename_tokens(self, entry: RomEntry) -> dict[str, str]:
         """Build template variable values from a RomEntry."""
         tokens: dict[str, str] = {
@@ -347,7 +445,7 @@ class RomManager:
                     "title_ja": info.title_name_ja,
                     "title_rom": info.title_name,
                     "title_id": info.title_id,
-                    "region": info.region,
+                    "region": self._REGION_SHORT.get(info.region.lower(), info.region) if info.region else "",
                     "languages": info.languages,
                     "version": info.version,
                     "file_type": info.file_type,
@@ -355,6 +453,9 @@ class RomManager:
                     "publisher": info.publisher,
                 }
             )
+
+        # {title} — pick best name based on app language
+        tokens["title"] = entry.display_name
 
         # Fill game name from game plugin if we have a title_id but no zh name
         if not tokens.get("title_zh") and entry.game_id:

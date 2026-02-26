@@ -146,7 +146,7 @@ class RomScraperTab(QWidget):
         rom_layout.setContentsMargins(0, 0, 0, 0)
 
         self._rom_table = TableWidget(self)
-        self._rom_table.setColumnCount(7)
+        self._rom_table.setColumnCount(8)
         self._rom_table.setHorizontalHeaderLabels([
             t("scraper.col_filename"),
             t("scraper.col_title_id"),
@@ -154,6 +154,7 @@ class RomScraperTab(QWidget):
             t("scraper.col_crc32"),
             t("scraper.col_version"),
             t("scraper.col_platform"),
+            t("scraper.col_region"),
             t("scraper.col_status"),
         ])
         self._rom_table.horizontalHeader().setSectionResizeMode(
@@ -254,16 +255,21 @@ class RomScraperTab(QWidget):
                     crc_item.setForeground(QColor("#2ecc71"))  # green — verified
                 else:
                     crc_item.setForeground(QColor("#e74c3c"))  # red — mismatch
+            elif entry.hash_crc32:
+                crc_item.setForeground(QColor("#e74c3c"))  # red — not in database
             self._rom_table.setItem(row, 3, crc_item)
 
             self._rom_table.setItem(row, 4, QTableWidgetItem(version))
             self._rom_table.setItem(row, 5, QTableWidgetItem(entry.platform.upper()))
 
+            region = entry.rom_info.region if entry.rom_info else ""
+            self._rom_table.setItem(row, 6, QTableWidgetItem(region))
+
             status = entry.scrape_status or "none"
             status_text = {"none": t("scraper.status_none"), "partial": t("scraper.status_partial"), "done": t("scraper.status_done")}.get(
                 status, status
             )
-            self._rom_table.setItem(row, 6, QTableWidgetItem(status_text))
+            self._rom_table.setItem(row, 7, QTableWidgetItem(status_text))
 
     # ── ROM row click → prefill search ──
 

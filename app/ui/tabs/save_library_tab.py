@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
@@ -27,6 +27,23 @@ from app.i18n import t
 if TYPE_CHECKING:
     from app.context import AppContext
     from app.models.game_save import GameSave
+
+
+class SaveScanWorker(QThread):
+    """Background worker for save scanning."""
+
+    finished = Signal(list)  # list[GameSave]
+
+    def __init__(self, ctx: AppContext, parent=None) -> None:
+        super().__init__(parent)
+        self._ctx = ctx
+
+    def run(self) -> None:
+        try:
+            saves = self._ctx.scanner.scan_all_saves()
+            self.finished.emit(saves)
+        except Exception:
+            self.finished.emit([])
 
 
 class SaveLibraryTab(QWidget):
@@ -83,18 +100,24 @@ class SaveLibraryTab(QWidget):
         layout.addLayout(status_row)
 
     def _on_scan(self) -> None:
-        """Scan for saves across all emulators."""
+        """Scan for saves across all emulators in a background thread."""
         if not self._ctx.scanner:
             return
         self._scan_btn.setEnabled(False)
         self._status.setText(t("save_lib.scanning"))
 
-        self._saves = self._ctx.scanner.scan_all_saves()
+        self._scan_worker = SaveScanWorker(self._ctx, self)
+        self._scan_worker.finished.connect(self._on_scan_finished)
+        self._scan_worker.start()
+
+    def _on_scan_finished(self, saves: list) -> None:
+        """Handle scan completion — refresh UI on the main thread."""
+        self._saves = saves
         self._refresh_table()
         self._update_emu_filter()
-
         self._status.setText(t("save_lib.n_saves", count=len(self._saves)))
         self._scan_btn.setEnabled(True)
+        self._scan_worker = None
 
     def _refresh_table(self, filter_text: str = "", emulator: str = "") -> None:
         self._table.setRowCount(0)

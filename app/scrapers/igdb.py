@@ -43,14 +43,34 @@ _PLATFORM_MAP: dict[str, int] = {
 _IGDB_IMAGE_BASE = "https://images.igdb.com/igdb/image/upload"
 
 
+def _build_proxy_url(config: Any) -> str:
+    """Assemble proxy URL from config fields (protocol/host/port)."""
+    scraper_cfg = config.get("scraper", {})
+    host = scraper_cfg.get("proxy_host", "")
+    if not host:
+        return ""
+    proto = scraper_cfg.get("proxy_protocol", "http")
+    port = scraper_cfg.get("proxy_port", "")
+    return f"{proto}://{host}:{port}" if port else f"{proto}://{host}"
+
+
 class IGDBProvider(ScraperProvider):
     """IGDB game metadata provider using Twitch API authentication."""
 
-    def __init__(self, client_id: str, client_secret: str) -> None:
+    def __init__(self, client_id: str, client_secret: str, config: Any = None) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
         self._access_token: str | None = None
         self._token_expires_at: float = 0
+        self._config = config
+
+    def _http_client(self, **kwargs: Any) -> httpx.Client:
+        """Create an httpx Client with optional proxy (read from config each time)."""
+        if self._config:
+            proxy = _build_proxy_url(self._config)
+            if proxy:
+                kwargs.setdefault("proxy", proxy)
+        return httpx.Client(**kwargs)
 
     @property
     def name(self) -> str:
@@ -69,17 +89,17 @@ class IGDBProvider(ScraperProvider):
             return self._access_token
 
         try:
-            resp = httpx.post(
-                "https://id.twitch.tv/oauth2/token",
-                params={
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                    "grant_type": "client_credentials",
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            with self._http_client(timeout=15) as client:
+                resp = client.post(
+                    "https://id.twitch.tv/oauth2/token",
+                    params={
+                        "client_id": self._client_id,
+                        "client_secret": self._client_secret,
+                        "grant_type": "client_credentials",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
             self._access_token = data["access_token"]
             self._token_expires_at = time.time() + data.get("expires_in", 3600) - 60
             return self._access_token
@@ -90,17 +110,17 @@ class IGDBProvider(ScraperProvider):
     def _api_request(self, endpoint: str, body: str) -> list[dict[str, Any]]:
         """Make an IGDB API request."""
         token = self._ensure_token()
-        resp = httpx.post(
-            f"https://api.igdb.com/v4/{endpoint}",
-            content=body,
-            headers={
-                "Client-ID": self._client_id,
-                "Authorization": f"Bearer {token}",
-            },
-            timeout=20,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        with self._http_client(timeout=20) as client:
+            resp = client.post(
+                f"https://api.igdb.com/v4/{endpoint}",
+                content=body,
+                headers={
+                    "Client-ID": self._client_id,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()
 
     @staticmethod
     def _detect_cjk_language(text: str) -> str | None:

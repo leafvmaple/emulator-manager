@@ -147,18 +147,20 @@ def _try_parse_at(data: bytes, base: int) -> SNESHeaderInfo | None:
         return None
 
     # Read fields relative to base (base = 0xFFB0 or 0x7FB0, etc.)
+    # Title starts at base+0x10 (0xFFC0), 21 bytes through base+0x24 (0xFFD4)
+    # Map mode at 0xFFD5 = base+0x25, etc.
     game_title_raw = data[base + 0x10: base + 0x25]  # 21 bytes
-    map_mode = data[base + 0x19]
-    rom_type = data[base + 0x1A]
-    rom_size_byte = data[base + 0x1B]
-    ram_size_byte = data[base + 0x1C]
-    country_code = data[base + 0x1D]
-    licensee_code = data[base + 0x1E]
-    version = data[base + 0x1F]
+    map_mode = data[base + 0x25]
+    rom_type = data[base + 0x26]
+    rom_size_byte = data[base + 0x27]
+    ram_size_byte = data[base + 0x28]
+    country_code = data[base + 0x29]
+    licensee_code = data[base + 0x2A]
+    version = data[base + 0x2B]
 
     # Checksum validation
-    checksum_complement = int.from_bytes(data[base + 0x20: base + 0x22], "little")
-    checksum = int.from_bytes(data[base + 0x22: base + 0x24], "little")
+    checksum_complement = int.from_bytes(data[base + 0x2C: base + 0x2E], "little")
+    checksum = int.from_bytes(data[base + 0x2E: base + 0x30], "little")
 
     # Basic validation: complement XOR checksum should be 0xFFFF
     if (checksum ^ checksum_complement) != 0xFFFF:

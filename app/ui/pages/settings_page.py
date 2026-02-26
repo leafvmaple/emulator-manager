@@ -5,13 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtWidgets import QVBoxLayout, QWidget, QFileDialog
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QFileDialog
 from qfluentwidgets import (
     ScrollArea,
+    SettingCard,
     SettingCardGroup,
     PushSettingCard,
     SwitchSettingCard,
     ExpandGroupSettingCard,
+    TransparentToolButton,
     LineEdit,
     PasswordLineEdit,
     ComboBox as FluentComboBox,
@@ -125,22 +128,66 @@ class SettingsPage(ScrollArea):
         layout.addWidget(sync_group)
 
         # ── ROM settings ──
-        rom_group = SettingCardGroup(t("settings.rom_group"), self)
-        self._rom_dir_card = PushSettingCard(
+        self._rom_group = SettingCardGroup(t("settings.rom_group"), self)
+        self._rom_add_card = PushSettingCard(
             t("settings.add"),
             FIF.FOLDER_ADD,
             t("settings.rom_dirs"),
-            self._format_rom_dirs(),
-            rom_group,
+            t("settings.rom_dirs_hint"),
+            self._rom_group,
         )
-        self._rom_dir_card.clicked.connect(self._on_add_rom_dir)
-        rom_group.addSettingCard(self._rom_dir_card)
-        layout.addWidget(rom_group)
+        self._rom_add_card.clicked.connect(self._on_add_rom_dir)
+        self._rom_group.addSettingCard(self._rom_add_card)
+
+        # Add existing dirs as individual cards
+        self._rom_dir_cards: list[SettingCard] = []
+        for d in ctx.config.rom_directories:
+            self._add_rom_dir_card(str(d))
+
+        layout.addWidget(self._rom_group)
 
         # ── Scraper settings ──
         scraper_config = ctx.config.get("scraper", {})
 
         scraper_group = SettingCardGroup(t("settings.scraper_group"), self)
+
+        # Proxy (protocol selector + host + port)
+        self._proxy_card = PushSettingCard(
+            "", FIF.WIFI,
+            t("settings.proxy"),
+            t("settings.proxy_hint"),
+            scraper_group,
+        )
+        self._proxy_card.button.hide()
+
+        self._proxy_protocol = FluentComboBox(self)
+        self._proxy_protocol.addItems(["http", "https", "socks5"])
+        saved_proto = scraper_config.get("proxy_protocol", "http")
+        idx = self._proxy_protocol.findText(saved_proto)
+        if idx >= 0:
+            self._proxy_protocol.setCurrentIndex(idx)
+        self._proxy_protocol.setMinimumWidth(90)
+        self._proxy_protocol.setMaximumWidth(110)
+        self._proxy_protocol.currentIndexChanged.connect(lambda _: self._save_scraper_config())
+
+        self._proxy_host = LineEdit(self)
+        self._proxy_host.setPlaceholderText(t("settings.proxy_host_placeholder"))
+        self._proxy_host.setMinimumWidth(160)
+        self._proxy_host.setMaximumWidth(260)
+        self._proxy_host.setText(scraper_config.get("proxy_host", ""))
+        self._proxy_host.editingFinished.connect(self._save_scraper_config)
+
+        self._proxy_port = LineEdit(self)
+        self._proxy_port.setPlaceholderText("7890")
+        self._proxy_port.setMinimumWidth(90)
+        self._proxy_port.setMaximumWidth(120)
+        self._proxy_port.setText(scraper_config.get("proxy_port", ""))
+        self._proxy_port.editingFinished.connect(self._save_scraper_config)
+
+        self._proxy_card.hBoxLayout.insertWidget(2, self._proxy_protocol)
+        self._proxy_card.hBoxLayout.insertWidget(3, self._proxy_host)
+        self._proxy_card.hBoxLayout.insertWidget(4, self._proxy_port)
+        scraper_group.addSettingCard(self._proxy_card)
 
         # IGDB
         self._igdb_client_id_card = _LineEditSettingCard(
@@ -247,17 +294,57 @@ class SettingsPage(ScrollArea):
                 dirs.append(path)
                 with self._ctx.config.batch_update():
                     self._ctx.config.set("rom_directories", dirs)
-                self._rom_dir_card.setContent(self._format_rom_dirs())
+                self._add_rom_dir_card(path)
 
-    def _format_rom_dirs(self) -> str:
-        dirs = self._ctx.config.rom_directories
-        if not dirs:
-            return t("settings.not_set")
-        return "; ".join(str(d) for d in dirs[:3]) + ("..." if len(dirs) > 3 else "")
+    def _add_rom_dir_card(self, path: str) -> None:
+        """Add a removable card for a ROM directory."""
+        card = SettingCard(
+            FIF.FOLDER,
+            path,
+            t("settings.rom_dir_item_hint"),
+            self._rom_group,
+        )
+        btn = TransparentToolButton(FIF.CLOSE, card)
+        btn.setFixedSize(32, 32)
+        btn.clicked.connect(lambda _=False, p=path, c=card: self._on_remove_rom_dir(p, c))
+        card.hBoxLayout.addWidget(btn, 0, Qt.AlignRight)
+        card.hBoxLayout.addSpacing(16)
+        self._rom_group.addSettingCard(card)
+        self._rom_dir_cards.append(card)
+        # Ensure card is visible when added dynamically after init
+        card.show()
+        self._rom_group.adjustSize()
+
+    def _on_remove_rom_dir(self, path: str, card: SettingCard) -> None:
+        """Remove a ROM directory entry."""
+        dirs = list(self._ctx.config.rom_directories)
+        if path in dirs:
+            dirs.remove(path)
+            with self._ctx.config.batch_update():
+                self._ctx.config.set("rom_directories", dirs)
+        if card in self._rom_dir_cards:
+            self._rom_dir_cards.remove(card)
+
+        # Remove from ExpandLayout's internal widget list
+        card.hide()
+        wl = self._rom_group.cardLayout._ExpandLayout__widgets
+        if card in wl:
+            wl.remove(card)
+        card.setParent(None)
+        card.deleteLater()
+
+        # Refresh group & scroll area sizes
+        self._rom_group.adjustSize()
+        w = self.widget()
+        if w:
+            w.adjustSize()
 
     def _save_scraper_config(self) -> None:
         """Persist all scraper credentials to config."""
         scraper = self._ctx.config.get("scraper", {})
+        scraper["proxy_protocol"] = self._proxy_protocol.currentText()
+        scraper["proxy_host"] = self._proxy_host.text().strip()
+        scraper["proxy_port"] = self._proxy_port.text().strip()
         scraper["igdb_client_id"] = self._igdb_client_id_card.text
         scraper["igdb_client_secret"] = self._igdb_client_secret_card.text
         scraper["screenscraper_dev_id"] = self._ss_dev_id_card.text
