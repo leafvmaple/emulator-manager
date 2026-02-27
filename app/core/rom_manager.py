@@ -255,17 +255,35 @@ class RomManager:
     def _extract_version_from_filename(stem: str) -> str:
         """Extract version from No-Intro filename patterns.
 
-        - ``(Rev 1)`` → ``"1.1"``
-        - ``(Rev 2)`` → ``"1.2"``
-        - ``[1.1]`` → ``"1.1"``
+        - ``(Rev 1)`` → ``"1"``
+        - ``(Rev 2)`` → ``"2"``
+        - ``(Rev 1.1)`` → ``"1.1"``
+        - ``[1.1]`` → ``"1"``
+        - ``(Beta)`` → ``"beta"``
+        - ``(Beta 1)`` → ``"beta"``
+        - ``(Virtual Console)`` → ``"vc"``
+        - ``(Sample)`` → ``"sample"``
         - No match → ``""``
         """
-        m = re.search(r"\(Rev\s+(\d+)\)", stem, re.IGNORECASE)
+        # Special versions take priority — ignore numeric version
+        beta_m = re.search(r"\(Beta(?:\s+(\d+))?\)", stem, re.IGNORECASE)
+        if beta_m:
+            return f"beta {beta_m.group(1)}" if beta_m.group(1) else "beta"
+        if re.search(r"\(Virtual Console\)", stem, re.IGNORECASE):
+            return "vc"
+        if re.search(r"\(Sample\)", stem, re.IGNORECASE):
+            return "sample"
+
+        # Match (Rev N) or (Rev X.Y)
+        m = re.search(r"\(Rev\s+([\d.]+)\)", stem, re.IGNORECASE)
         if m:
-            return f"1.{m.group(1)}"
+            return m.group(1)
+
+        # Match [1.N]
         m = re.search(r"\[1\.(\d+)\]", stem)
         if m:
-            return f"1.{m.group(1)}"
+            return m.group(1)
+
         return ""
 
     # No-Intro region tags (full names + abbreviations)

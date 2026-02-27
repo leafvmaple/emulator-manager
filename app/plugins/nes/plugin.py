@@ -122,20 +122,36 @@ def _extract_region_from_filename(stem: str) -> str:
 def _extract_version_from_filename(stem: str) -> str:
     """Extract version from filename patterns like '(Rev 1)' or '[1.1]'.
 
-    - ``(Rev 1)`` / ``(Rev A)`` → ``"1.1"``
-    - ``(Rev 2)`` → ``"1.2"``
-    - ``[1.1]`` → ``"1.1"``
-    - ``[1.2]`` → ``"1.2"``
+    - ``(Rev 1)`` / ``(Rev A)`` → ``"1"``
+    - ``(Rev 2)`` → ``"2"``
+    - ``(Rev 1.1)`` → ``"1.1"``
+    - ``[1.1]`` → ``"1"``
+    - ``[1.2]`` → ``"2"``
+    - ``(Beta)`` → ``"beta"``
+    - ``(Beta 1)`` → ``"beta"``
+    - ``(Virtual Console)`` → ``"vc"``
+    - ``(Sample)`` → ``"sample"``
     - No match → ``""``
     """
-    # Match (Rev N) where N is a digit
-    m = re.search(r"\(Rev\s+(\d+)\)", stem, re.IGNORECASE)
+    # Special versions take priority — ignore numeric version
+    beta_m = re.search(r"\(Beta(?:\s+(\d+))?\)", stem, re.IGNORECASE)
+    if beta_m:
+        return f"beta {beta_m.group(1)}" if beta_m.group(1) else "beta"
+    if re.search(r"\(Virtual Console\)", stem, re.IGNORECASE):
+        return "vc"
+    if re.search(r"\(Sample\)", stem, re.IGNORECASE):
+        return "sample"
+
+    # Match (Rev N) or (Rev X.Y) where N is a digit or decimal
+    m = re.search(r"\(Rev\s+([\d.]+)\)", stem, re.IGNORECASE)
     if m:
-        return f"1.{m.group(1)}"
+        return m.group(1)
+
     # Match [1.N] where N is a digit
     m = re.search(r"\[1\.(\d+)\]", stem)
     if m:
-        return f"1.{m.group(1)}"
+        return m.group(1)
+
     return ""
 
 
@@ -168,7 +184,7 @@ class NESGamePlugin(GamePlugin):
 
         crc = self._compute_crc32(rom_path)
         title_name = ""
-        region = _extract_region_from_filename(rom_path.stem) or header.region
+        region = header.region or _extract_region_from_filename(rom_path.stem)
         dat_crc32: list[str] | None = None
         dat_id = -1
 

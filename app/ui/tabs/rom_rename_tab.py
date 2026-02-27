@@ -60,8 +60,8 @@ class RomRenameTab(QWidget):
         out_row.addWidget(self._browse_btn)
 
         self._mode_combo = ComboBox(self)
-        self._mode_combo.addItem(t("rename.mode_copy"), userData="copy")
         self._mode_combo.addItem(t("rename.mode_move"), userData="move")
+        self._mode_combo.addItem(t("rename.mode_copy"), userData="copy")
         self._mode_combo.setMinimumWidth(80)
         out_row.addWidget(self._mode_combo)
 

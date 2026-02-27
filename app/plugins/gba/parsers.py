@@ -23,6 +23,8 @@ from loguru import logger
 _HEADER_SIZE = 0xC0  # minimum bytes needed
 
 # Game code last character → region mapping
+# Sources: devkitPro/ndstool ndscodes.cpp (J/E/P/D/F/I/S/H/K/X)
+#          + well-known GBA additions (U=Australia, C=China/iQue)
 _REGION_MAP: dict[str, str] = {
     "J": "Japan",
     "E": "USA",
@@ -31,7 +33,11 @@ _REGION_MAP: dict[str, str] = {
     "F": "France",
     "S": "Spain",
     "I": "Italy",
+    "H": "Netherlands",
     "U": "Australia",
+    "K": "Korea",
+    "C": "China",
+    "X": "Europe",
 }
 
 # Well-known maker codes → publisher name
